@@ -1,0 +1,191 @@
+---
+title: "PML-Project: Exercize type Prediction"
+author: "Subodhan B Gadgil"
+date: "September 2, 2017"
+output: html_document
+---
+
+## Introduction
+
+The goal this report is to predict the manner in which the individuals did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases. 
+
+```{r setup, include=FALSE}
+library(plyr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+
+```
+
+## Getting and Cleaning of data
+
+We will download the data from the location provided and load the training and testing data frames.
+
+
+```{r DownloadAndRead}
+#Training Data
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "pml-training.csv")
+
+pmlTrngData = read.csv("pml-training.csv")
+
+#Test Data
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile = "pml-testing.csv")
+
+pmlTestData = read.csv("pml-testing.csv")
+
+str(pmlTrngData, list.len = 20)
+
+```
+
+We will partition the training data set so that we can use one part to as training data set and the other as the validation data set to validate the model.
+
+```{r partition}
+# partition the training dataset
+set.seed(602223)
+trngPart  <- createDataPartition(pmlTrngData$classe, p=0.66, list=FALSE)
+trngData <- pmlTrngData[trngPart, ]
+valData  <- pmlTrngData[-trngPart, ]
+
+dim(trngData)
+```
+
+
+Based on the quick inspection, first 5 columns seem to be meta data columns and can be safely ignored.
+
+```{r TrimColumns}
+trngData <- trngData[, -(1:5)]
+valData <- valData[, -(1:5)]
+```
+
+There seem to be multiple columns which have mostly NA values. Let us remove those columns which have no significant information.
+
+```{r RemoveNACols}
+# remove columns that have 95% NA values
+naCols <- sapply(trngData, function(x) mean(is.na(x))) > 0.95
+trngData <- trngData[, naCols==FALSE]
+valData  <- valData[, naCols==FALSE]
+```
+
+Let us also remove the columns that have negligible variance.
+
+```{r LowVariance}
+# remove columns with negligible Variance
+negliVar <- nearZeroVar(trngData)
+trngData <- trngData[, -negliVar]
+valData  <- valData[, -negliVar]
+dim(trngData)
+```
+
+## Building prediction Models
+
+The reduced training dataset has 53 variables that affect the outcome (the 'classe' variable). We should try and reduce these variables if possible. If we use Random Forest algorithm to see the 'importance' of these variables, we can make a determination. Let us plot the importance using varImpPlot().
+
+### Variable reduction
+
+```{r VariableReduction1}
+set.seed(31416)
+fitModel <- randomForest(classe~., data=trngData, importance=TRUE, ntree=100)
+
+varImpPlot(fitModel)
+```
+
+Based on the importance, we can select top 10+ variables and create a subset of the variables for building our prediction model.
+
+```{r VariableReduction2}
+imp1<-importance(fitModel)
+#get MeanDecreaseAccuracy and MeanDecreaseGini columns
+imp1trim <- imp1[,c(6,7)]
+
+#Get two data sets each ordered (in decreasing order) in one of the above two columns
+imp1.1<-imp1trim[order(-imp1trim[,1]),]
+imp1.2<-imp1trim[order(-imp1trim[,2]),]
+
+# Select top 20 elements from each
+imp1.1 <- imp1.1[1:20,]
+imp1.2 <- imp1.2[1:20,]
+
+#Get the row names for each
+nm1 <- row.names(imp1.1)
+nm2 <- row.names(imp1.2)
+
+# and get the column variable names
+nm3 <- intersect(nm1, nm2)
+print(nm3)
+
+# reduce the raining dataset columns
+trngData1 <- trngData[,c("classe", nm3)]
+#dim(trngData1)
+
+```
+
+### Model Selection
+
+Now, we will use the following three models for evaluation of prediction suitability:
+
+  * RPart
+  * GBM
+  * Random Forest
+
+```{r TrainingModels}
+set.seed(124681)
+controlRpart <- trainControl(method="cv", number=3, verboseIter = FALSE)
+
+model_rpart <- train(classe~., data = trngData1, trControl = controlRpart, method='rpart')
+
+
+controlGBM <- trainControl(method = "repeatedcv", number = 5, repeats = 2, verboseIter =  FALSE)
+
+model_gbm <- train(classe~., data = trngData1, trControl = controlGBM, method = 'gbm', verbose=F)
+
+
+controlRF <- trainControl(method="cv", number=3, verboseIter = FALSE)
+
+model_rf <- train(classe~., data = trngData1, trControl = controlRF, method = 'rf', ntree = 100)
+```
+
+Now, let us create predictions using the above models and compare the results using the validation dataset (valData) that we have created.
+
+```{r ComparePrecitions}
+# predict using Rpart
+predictionRpart <- predict(model_rpart, newdata=valData)
+cmRpart <- confusionMatrix(predictionRpart, valData$classe)
+
+# predict using gbm
+predictionGBM <- predict(model_gbm, newdata=valData)
+cmGBM <- confusionMatrix(predictionGBM, valData$classe)
+
+# predict using Random Forest
+predictionRF <- predict(model_rf, newdata=valData)
+cmRF <- confusionMatrix(predictionRF, valData$classe)
+
+
+print(cmRpart)
+print(cmGBM)
+print(cmRF)
+
+```
+
+based on the analysis of the above three models, it is clear that RPart model does not perform very well in this case. Both Gradient Boosting (GBM) and Random Forest (RF) perform very well, but Random Forest model has a small edge.
+
+### Out-of-Sample error
+
+The Random Forest algorithm provides an accuracy of 99.81% on the validataion dataset that we have created (as per the ConfusionMatrix above).The out-of-sample error rate for the selected Random Forest algorithm is 0.19% (1.00 - Accuracy = .0019, which is 0.19%).
+
+### Final Model
+
+based on the analysis above, we will use Random Forest model to perform the predictions.
+
+
+## Prediction
+
+Let us perform the prediction of the data provided by 'pml-testing.csv'.
+
+```{r prediction}
+predictionFinal <- predict(model_rf, newdata = pmlTestData)
+
+
+AnswerDF <- data.frame(ProblemId = pmlTestData$problem_id, Predicted = predictionFinal)
+
+print(AnswerDF)
+```
